@@ -1,0 +1,88 @@
+name: Run Script on Teleport Nodes
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_ip:
+        description: 'Node IP address (e.g., 172.31.0.160)'
+        required: true
+        type: string
+      script:
+        description: 'Script to run'
+        required: true
+        default: 'uptime && hostname && df -h'
+        type: string
+
+jobs:
+  run-on-node:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Install Teleport
+        run: |
+          curl -O https://cdn.teleport.dev/teleport-v14.3.3-linux-amd64-bin.tar.gz
+          tar -xzf teleport-v14.3.3-linux-amd64-bin.tar.gz
+          sudo ./teleport/install
+          
+      - name: Setup Teleport Bot
+        run: |
+          mkdir -p /tmp/bot
+          echo "${{ secrets.TELEPORT_BOT_TOKEN }}" > /tmp/bot/token
+          
+          # Start bot to get credentials
+          teleport bot start \
+            --token=$(cat /tmp/bot/token) \
+            --proxy-server=${{ secrets.TELEPORT_PROXY }} \
+            --destination-dir=/tmp/bot-creds \
+            --data-dir=/tmp/bot-data \
+            --join-method=token &
+          
+          # Wait for credentials
+          sleep 15
+          
+      - name: Find Node by IP
+        id: find_node
+        run: |
+          export TELEPORT_IDENTITY_FILE=/tmp/bot-creds/identity
+          
+          # List all nodes and find matching IP
+          NODE_NAME=$(tsh ls --format=json | jq -r '.[] | select(.addr | contains("${{ inputs.node_ip }}")) | .host_name')
+          
+          if [ -z "$NODE_NAME" ]; then
+            echo "Error: No node found with IP ${{ inputs.node_ip }}"
+            exit 1
+          fi
+          
+          echo "Found node: $NODE_NAME"
+          echo "node_name=$NODE_NAME" >> $GITHUB_OUTPUT
+          
+      - name: Run Script on Node
+        run: |
+          export TELEPORT_IDENTITY_FILE=/tmp/bot-creds/identity
+          
+          echo "Running script on node: ${{ steps.find_node.outputs.node_name }}"
+          echo "Script: ${{ inputs.script }}"
+          
+          tsh ssh ubuntu@${{ steps.find_node.outputs.node_name }} "${{ inputs.script }}"
+          
+      - name: Cleanup
+        if: always()
+        run: |
+          pkill teleport || true
+          rm -rf /tmp/bot /tmp/bot-creds /tmp/bot-data
+```
+
+---
+
+## Part 4: Test the Workflow
+
+1. **Go to:** GitHub repo → Actions tab
+
+2. **Click:** "Run Script on Teleport Nodes"
+
+3. **Click:** "Run workflow"
+
+4. **Fill in:**
+```
+   Node IP: 172.31.0.160
+   Script: hostname && uptime && whoami
